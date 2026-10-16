@@ -54,3 +54,9 @@ spec:
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp       # gunicorn needs a writable temp dir; root filesystem stays read-only
+      volumes:
+        - name: tmp
+          emptyDir: {}
