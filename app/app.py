@@ -13,7 +13,7 @@ ENVIRONMENT = os.getenv("ENVIRONMENT", "local")
 @app.get("/")
 def index():
     return jsonify(
-        message="Hello from AKS!",
+        message="Hello from AKS - v2!",
         version=APP_VERSION,
         environment=ENVIRONMENT,
         pod=socket.gethostname(),
