@@ -19,7 +19,7 @@ variable "node_count" {
 variable "node_vm_size" {
   description = "VM size for AKS nodes (B-series keeps lab cost low)"
   type        = string
-  default     = "Standard_B2s"
+  default     = "Standard_B2s_v2"
 }
 
 variable "tags" {
