@@ -10,7 +10,7 @@ def test_index_returns_message():
     resp = client().get("/")
     assert resp.status_code == 200
     body = resp.get_json()
-    assert body["message"] == "Hello from AKS!"
+    assert body["message"] == "Hello from AKS - v2!"
     assert "version" in body and "environment" in body
 
 
