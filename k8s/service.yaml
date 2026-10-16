@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: hello-aks
+  labels:
+    app: hello-aks
+spec:
+  type: LoadBalancer        # gives a public IP so you can open the app in a browser
+  selector:
+    app: hello-aks
+  ports:
+    - port: 80
+      targetPort: 8080

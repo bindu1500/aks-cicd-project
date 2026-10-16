@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hello-aks
+  labels:
+    app: hello-aks
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0   # zero-downtime: never drop below desired replicas
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: hello-aks
+  template:
+    metadata:
+      labels:
+        app: hello-aks
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: hello-aks
+          image: __IMAGE__            # replaced by the pipeline with <acr>.azurecr.io/hello-aks:<buildId>
+          ports:
+            - containerPort: 8080
+          env:
+            - name: APP_VERSION
+              value: "__VERSION__"
+            - name: ENVIRONMENT
+              value: "__ENVIRONMENT__"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true

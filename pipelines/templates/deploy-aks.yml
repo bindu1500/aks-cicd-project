@@ -1,0 +1,69 @@
+# Reusable deployment job: same steps for every environment, only parameters change.
+parameters:
+  - name: environmentName
+    type: string
+  - name: namespace
+    type: string
+
+jobs:
+  - deployment: deploy_${{ parameters.environmentName }}
+    displayName: Deploy to ${{ parameters.environmentName }}
+    environment: ${{ parameters.environmentName }}
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+            - download: current
+              artifact: manifests
+
+            # Inject the exact image built in this run, plus version/env labels
+            - bash: |
+                set -euo pipefail
+                cd $(Pipeline.Workspace)/manifests
+                sed -i "s|__IMAGE__|$(ACR_LOGIN_SERVER)/$(imageRepository):$(tag)|g" deployment.yaml
+                sed -i "s|__VERSION__|$(tag)|g; s|__ENVIRONMENT__|${{ parameters.environmentName }}|g" deployment.yaml
+                grep -n "image:" deployment.yaml
+              displayName: Render manifests
+
+            - task: AzureCLI@2
+              displayName: Apply manifests & wait for rollout
+              inputs:
+                azureSubscription: $(azureSubscription)
+                scriptType: bash
+                scriptLocation: inlineScript
+                inlineScript: |
+                  set -euo pipefail
+                  az aks get-credentials -g $(AKS_RG) -n $(AKS_CLUSTER) --overwrite-existing
+                  kubelogin convert-kubeconfig -l azurecli || true
+
+                  NS=${{ parameters.namespace }}
+                  kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
+                  kubectl apply -n "$NS" -f $(Pipeline.Workspace)/manifests/
+
+                  # Fails the stage if pods don't become ready within 3 minutes
+                  if ! kubectl rollout status deployment/hello-aks -n "$NS" --timeout=180s; then
+                    echo "##vso[task.logissue type=error]Rollout failed - rolling back to previous version"
+                    kubectl rollout undo deployment/hello-aks -n "$NS"
+                    exit 1
+                  fi
+
+            - task: AzureCLI@2
+              displayName: Smoke test /health
+              inputs:
+                azureSubscription: $(azureSubscription)
+                scriptType: bash
+                scriptLocation: inlineScript
+                inlineScript: |
+                  set -euo pipefail
+                  NS=${{ parameters.namespace }}
+                  # Wait for the LoadBalancer public IP (first deploy can take ~1-2 min)
+                  for i in $(seq 1 30); do
+                    IP=$(kubectl get svc hello-aks -n "$NS" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' || true)
+                    [[ -n "$IP" ]] && break
+                    sleep 10
+                  done
+                  [[ -z "$IP" ]] && { echo "##vso[task.logissue type=error]No external IP assigned"; exit 1; }
+
+                  echo "App URL: http://$IP"
+                  curl -fsS --retry 5 --retry-delay 5 "http://$IP/health"
+                  curl -fsS "http://$IP/"

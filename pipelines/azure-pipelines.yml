@@ -1,0 +1,106 @@
+# Application CI/CD: Test -> Build & push image to ACR -> Deploy Dev -> (approval) -> Deploy Prod
+# Branching: feature/* -> PR into main (CI only) ; main -> full CD
+
+trigger:
+  branches:
+    include: [main]
+  paths:
+    include: [app/*, k8s/*, pipelines/azure-pipelines.yml, pipelines/templates/deploy-aks.yml]
+
+pr:
+  branches:
+    include: [main]
+  paths:
+    include: [app/*, k8s/*]
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  - group: aks-app                      # ACR_LOGIN_SERVER, AKS_RG, AKS_CLUSTER (from Terraform outputs)
+  - name: azureSubscription
+    value: sc-azure-arm                 # Azure Resource Manager service connection
+  - name: acrServiceConnection
+    value: sc-acr                       # Docker Registry service connection (type: Azure Container Registry)
+  - name: imageRepository
+    value: hello-aks
+  - name: tag
+    value: $(Build.BuildId)
+
+stages:
+  # ------------------------------------------------------------------
+  - stage: CI
+    displayName: Build & Test
+    jobs:
+      - job: test
+        displayName: Unit tests
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '3.12'
+
+          - bash: |
+              pip install -r app/requirements.txt
+              cd app && python -m pytest --junitxml=test-results.xml -v
+            displayName: Run pytest
+
+          - task: PublishTestResults@2
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFormat: JUnit
+              testResultsFiles: app/test-results.xml
+              testRunTitle: Unit tests
+
+      - job: build
+        displayName: Build & push image
+        dependsOn: test
+        steps:
+          - task: Docker@2
+            displayName: Build image
+            inputs:
+              command: build
+              containerRegistry: $(acrServiceConnection)
+              repository: $(imageRepository)
+              dockerfile: app/Dockerfile
+              buildContext: app
+              tags: |
+                $(tag)
+                latest
+
+          # Push only from main; PRs prove the image builds but never publish it
+          - task: Docker@2
+            displayName: Push image to ACR
+            condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+            inputs:
+              command: push
+              containerRegistry: $(acrServiceConnection)
+              repository: $(imageRepository)
+              tags: |
+                $(tag)
+                latest
+
+          - publish: k8s
+            artifact: manifests
+            displayName: Publish Kubernetes manifests
+
+  # ------------------------------------------------------------------
+  - stage: DeployDev
+    displayName: Deploy to Dev
+    dependsOn: CI
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - template: templates/deploy-aks.yml
+        parameters:
+          environmentName: dev
+          namespace: dev
+
+  # ------------------------------------------------------------------
+  - stage: DeployProd
+    displayName: Deploy to Prod
+    dependsOn: DeployDev
+    condition: succeeded()
+    jobs:
+      - template: templates/deploy-aks.yml
+        parameters:
+          environmentName: prod             # add an Approval check on this environment
+          namespace: prod

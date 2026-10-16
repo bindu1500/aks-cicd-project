@@ -1,0 +1,15 @@
+# Reusable step template: installs a pinned Terraform version on the agent.
+parameters:
+  - name: tfVersion
+    type: string
+    default: 1.9.8
+
+steps:
+  - bash: |
+      set -euo pipefail
+      cd /tmp
+      curl -sSLo tf.zip "https://releases.hashicorp.com/terraform/${{ parameters.tfVersion }}/terraform_${{ parameters.tfVersion }}_linux_amd64.zip"
+      unzip -o -q tf.zip
+      sudo mv terraform /usr/local/bin/terraform
+      terraform version
+    displayName: Install Terraform ${{ parameters.tfVersion }}

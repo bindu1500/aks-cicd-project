@@ -1,0 +1,104 @@
+# Infrastructure pipeline: Terraform validate -> plan -> (approval) -> apply
+# Runs only when files under infra/ change.
+
+trigger:
+  branches:
+    include: [main]
+  paths:
+    include: [infra/*]
+
+pr:
+  branches:
+    include: [main]
+  paths:
+    include: [infra/*]
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  - group: tfstate                      # TF_STATE_RG, TF_STATE_SA, TF_STATE_CONTAINER
+  - name: azureSubscription
+    value: sc-azure-arm                 # Azure Resource Manager service connection name
+  - name: tfVersion
+    value: 1.9.8
+  - name: tfDir
+    value: $(System.DefaultWorkingDirectory)/infra/terraform
+
+stages:
+  # ------------------------------------------------------------------
+  - stage: Plan
+    displayName: Terraform Validate & Plan
+    jobs:
+      - job: plan
+        steps:
+          - template: templates/terraform-setup.yml
+            parameters:
+              tfVersion: $(tfVersion)
+
+          - task: AzureCLI@2
+            displayName: Init, Validate, Plan
+            inputs:
+              azureSubscription: $(azureSubscription)
+              scriptType: bash
+              scriptLocation: inlineScript
+              addSpnToEnvironment: true
+              workingDirectory: $(tfDir)
+              inlineScript: |
+                set -euo pipefail
+                source $(System.DefaultWorkingDirectory)/pipelines/scripts/arm-env.sh
+
+                terraform fmt -check -recursive
+                terraform init -input=false \
+                  -backend-config="resource_group_name=$(TF_STATE_RG)" \
+                  -backend-config="storage_account_name=$(TF_STATE_SA)" \
+                  -backend-config="container_name=$(TF_STATE_CONTAINER)" \
+                  -backend-config="key=aks-cicd.tfstate"
+                terraform validate
+                terraform plan -input=false -out=tfplan
+
+          - publish: $(tfDir)/tfplan
+            artifact: tfplan
+            displayName: Publish plan file
+
+  # ------------------------------------------------------------------
+  - stage: Apply
+    displayName: Terraform Apply
+    dependsOn: Plan
+    # Never apply from a pull request; only from main
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: apply
+        environment: infra-prod          # add an Approval check on this environment
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - download: current
+                  artifact: tfplan
+
+                - template: templates/terraform-setup.yml
+                  parameters:
+                    tfVersion: $(tfVersion)
+
+                - task: AzureCLI@2
+                  displayName: Apply reviewed plan
+                  inputs:
+                    azureSubscription: $(azureSubscription)
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    addSpnToEnvironment: true
+                    workingDirectory: $(tfDir)
+                    inlineScript: |
+                      set -euo pipefail
+                      source $(System.DefaultWorkingDirectory)/pipelines/scripts/arm-env.sh
+
+                      terraform init -input=false \
+                        -backend-config="resource_group_name=$(TF_STATE_RG)" \
+                        -backend-config="storage_account_name=$(TF_STATE_SA)" \
+                        -backend-config="container_name=$(TF_STATE_CONTAINER)" \
+                        -backend-config="key=aks-cicd.tfstate"
+                      # Apply exactly the plan that was reviewed and approved
+                      terraform apply -input=false $(Pipeline.Workspace)/tfplan/tfplan
+                      terraform output
